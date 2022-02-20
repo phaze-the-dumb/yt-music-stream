@@ -1,0 +1,391 @@
+<body>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@100;400&display=swap');
+
+        .info{
+            text-align: center;
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+            border-radius: 25px;
+            font-family: 'Kanit', sans-serif;
+            color: whitesmoke;
+            display: flex;
+        }
+
+        .playing{
+            width: 250px;
+            padding: 10px 50px;
+        }
+    </style>
+
+    <div class="info">
+        <div class="playing">
+            <h2>Previous Song</h2>
+            <h1 style="font-weight: 1000;" id="prevSongName"></h1>
+        </div>
+
+        <div class="playing">
+            <h2>Currently Playing</h2>
+            <h1 style="font-weight: 1000;" id="songName"></h1>
+        </div>
+
+        <div class="playing">
+            <h2>Next Song</h2>
+            <h1 style="font-weight: 1000;" id="nextSongName"></h1>
+        </div>
+    </div>
+
+    <script>
+    // Audio Settings
+    let channelCount = 1024;
+
+    // EQ Settings
+    let eq = true;
+    let cutOff = 420;
+    let eqHeight = 20;
+    let eqExAmount = 1.5;
+    let eqRemoveAmount = 100;
+
+    // Particle Settings
+    let particlesEnabled = true;
+    let particleSpeedMultiplier = 0.1;
+    let particleSpeedSubtracion = 1.5;
+
+    class Environment{
+        constructor(options={airRes: 3, gravity: -9.8}){
+            this.airRes = options.airRes;
+            this.gravity = options.gravity;
+            this.particles = [];
+        }
+    }
+    
+    let particles = [];
+    let canvas = document.createElement('canvas');
+    let ctx = canvas.getContext('2d');
+    let env = new Environment();
+    let rainbowOffset = 0;
+
+    // console.log = (...text) => {
+    //     fetch('/log?t='+text.join(' '))
+    // }
+
+    let audio;
+    let main = async () => {
+        let songData = await (await fetch('/songData')).json();
+
+        let lastPlayed = null;
+        let currentSong = null;
+        let bgLoaded = false;
+        let lastQueued = null;
+        let zoom = 1;
+        let queue = [];
+
+        document.body.style.margin = '0'
+        document.body.appendChild(canvas);
+
+        canvas.width = 1920;
+        canvas.height = 1080;
+
+        let image = new Image();
+        audio = new Audio();
+
+        const actx = new AudioContext();
+        const audioSrc = actx.createMediaElementSource(audio);
+        const analyser = actx.createAnalyser();
+
+        audioSrc.connect(analyser);
+        analyser.connect(actx.destination);
+
+        analyser.fftSize = channelCount;
+        const bufferLength = analyser.frequencyBinCount;
+        const data = new Uint8Array(bufferLength);
+
+        audio.onplay = () => actx.resume();
+
+        let queueSong = () => {
+            let song = songData[Math.floor(Math.random() * songData.length)];
+            if(lastQueued && song.id === lastQueued.id){
+                queueSong();
+            } else{
+                queue.push(song);
+                lastQueued = song;
+                console.log('Queueing: '+song.name);
+            }
+        }
+
+        let setupAudio = () => {
+            bgLoaded = false;
+            image.src = '/background/'+currentSong.bg
+            console.log('Playing: '+currentSong.name);
+            audio.src = '/file/'+currentSong.id+'.mp3';
+            audio.play();
+
+            if(lastPlayed){
+                document.getElementById('prevSongName').innerHTML = lastPlayed.name;
+            } else{
+                document.getElementById('prevSongName').innerHTML = 'None';
+            }
+            
+            document.getElementById('songName').innerHTML = currentSong.name;
+            document.getElementById('nextSongName').innerHTML = queue[1].name;
+        }
+
+        let nextSong = () => {
+            queue.shift();
+            queueSong();
+
+            lastPlayed = currentSong;
+            currentSong = queue[0];
+            setupAudio();
+        }
+
+        let startPlaying = () => {
+            queueSong();
+            queueSong();
+
+            lastPlayed = currentSong;
+            currentSong = queue[0];
+            setupAudio();
+        }
+
+        setInterval(() => {
+            let particleSpeedthingy = average(...data);
+
+            particles.forEach(p => {
+                p.boostVel(particleSpeedthingy);
+
+                p.move();
+                p.render(ctx)
+            });
+        }, 100);
+
+        let render = () => {
+            requestAnimationFrame(render);
+
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            analyser.getByteFrequencyData(data);
+
+            ctx.globalAlpha = average(...data) / 50;
+
+            if(bgLoaded){
+                let width = 1920 * zoom;
+                let height = 1080 * zoom;
+
+                let widthAmt = (width / 2) - (canvas.width / 2);
+                let heightAmt = (height / 2) - (canvas.height / 2);
+
+                ctx.drawImage(image, 0 - widthAmt, 0 - heightAmt, canvas.width + widthAmt * 2, canvas.height + heightAmt * 2);
+            }
+
+            let bass = [...data];
+
+            bass.splice(channelCount / 50, channelCount - (channelCount / 50));
+            zoom = 1 + (average(...bass) / 1000);
+
+
+            ctx.strokeStyle = '#00ccff'
+            if(eq){
+                let angle = 140
+                let d1 = [...data];
+                d1.splice(d1.length - cutOff, d1.length);
+
+                let revArr = Array.from(d1);
+                revArr = revArr.reverse();
+                revArr = revArr.concat(...d1);
+
+                let amtBars = revArr.length;
+                let barSpacing = (canvas.width / amtBars);
+                
+                revArr.forEach((v, i) => {
+                    ctx.strokeStyle = wheel(i + rainbowOffset);
+                    ctx.beginPath();
+                    ctx.moveTo(canvas.width - (i * barSpacing), canvas.height);
+
+                    let endPos = getAngle(canvas.width - (i * barSpacing), canvas.height, angle, (Math.pow(((v / 100) * eqHeight), eqExAmount) - eqRemoveAmount) * -1)
+                    ctx.lineTo(endPos.x, endPos.y, );
+
+                    ctx.stroke();
+                    ctx.closePath();
+                    angle -= 100 / revArr.length;
+                })
+
+                ctx.lineWidth = '5'
+                rainbowOffset += 0.01;
+                if(rainbowOffset >= 360)rainbowOffset = 0;
+            }
+
+            if(eq){
+                let angle = -140
+                let d1 = [...data];
+                d1.splice(d1.length - cutOff, d1.length);
+
+                let revArr = Array.from(d1);
+                revArr = revArr.reverse();
+                revArr = revArr.concat(...d1);
+
+                let amtBars = revArr.length;
+                let barSpacing = (canvas.width / amtBars);
+                
+                revArr.forEach((v, i) => {
+                    ctx.strokeStyle = wheel(i + rainbowOffset);
+                    ctx.beginPath();
+                    ctx.moveTo(canvas.width - (i * barSpacing), 0);
+
+                    let endPos = getAngle(canvas.width - (i * barSpacing), 0, angle, (Math.pow(((v / 100) * eqHeight), eqExAmount) - eqRemoveAmount) * -1)
+                    ctx.lineTo(endPos.x, endPos.y, );
+
+                    ctx.stroke();
+                    ctx.closePath();
+                    angle += 100 / revArr.length;
+                })
+
+                ctx.lineWidth = '5'
+            }
+            
+            ctx.strokeStyle = '#000'
+
+            particles.forEach(p => {
+                p.move();
+                p.render(ctx)
+            });
+        }
+
+        audio.ontimeupdate = () => {
+            if(audio.currentTime >= audio.duration){
+                nextSong();
+            }
+        }
+
+        image.onload = () => {
+            bgLoaded = true;
+        }
+
+        if(particlesEnabled){
+            for (let index = 0; index < 100; index++) {
+                let p = new Particle(env, Math.floor(Math.random() * canvas.width), Math.floor(Math.random() * canvas.height), [ (Math.random() * 0.5) - 0.25, (Math.random() * 2) * -1 ])
+                particles.push(p);
+            }
+        }
+
+        render();
+        startPlaying();
+    }
+
+    class Particle{
+        constructor(env, x=0, y=0, vel=[0,0], colour='#ffffff', options={size: 10}){
+            this.opacity = '55'
+            this.vel = 100000;
+            if(vel[0] > 0){
+                this.xfvel = vel[0];
+                this.xbvel = 0;
+            } else{
+                this.xfvel = 0;
+                this.xbvel = vel[0] * -1;
+            }
+
+            if(vel[1] > 0){
+                this.yfvel = 0;
+                this.ybvel = vel[1];
+            } else{
+                this.yfvel = 0;
+                this.ybvel = vel[1] * -1;
+            }
+
+            if(vel[0] === 0){
+                this.xfvel = 0;
+                this.xbvel = 0;
+            }
+            
+            if(vel[1] === 0){
+                this.yfvel = 0;
+                this.ybvel = 0;
+            }
+
+            this.x = x;
+            this.y = y;
+            this.colour = colour + this.opacity;
+            this.size = options.size;
+            this.env = env;
+            this.env.particles.push(this);
+        }
+        render(ctx){
+            ctx.fillStyle = this.colour;
+
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+        move(){
+            this.x += this.xfvel - ((this.env.airRes + this.env.gravity) / 2)
+            this.y += this.yfvel - ((this.env.airRes + this.env.gravity) / 2)
+
+            this.x -= this.xbvel - ((this.env.airRes + this.env.gravity) / 2)
+            this.y -= this.ybvel - ((this.env.airRes + this.env.gravity) / 2)
+
+            if(this.xfvel > 1){
+                this.xfvel -= 0.0001;
+            }
+            
+            if(this.xbvel > 1){
+                this.xbvel -= 0.0001;
+            }
+
+            if(this.yfvel > 1){
+                this.yfvel -= 0.0001;
+            }
+
+            if(this.ybvel > 1){
+                this.ybvel -= 0.0001;
+            }
+
+            if(this.x < 0 - this.size || this.y < 0 - this.size || this.x > canvas.width + this.size || this.y > canvas.height + this.size){
+                this.remove()
+            }
+
+            this.vel = (this.xfvel + this.xbvel + this.yfvel + this.ybvel) / 4
+        }
+        boostVel(amt){
+            amt *= particleSpeedMultiplier;
+            amt -= particleSpeedSubtracion;
+
+            if(amt / 1.1 > 1){
+                this.xfvel *= amt / 1.1;
+                this.xbvel *= amt / 1.1;
+                this.yfvel *= amt / 1.1;
+                this.ybvel *= amt / 1.1;
+            }
+        }
+        boostColour(amt){
+
+        }
+        remove(){
+            particles = particles.filter(x => x !== this)
+
+            let p = new Particle(env, Math.floor(Math.random() * canvas.width), canvas.height, [ (Math.random() * 0.5) - 0.25, (Math.random() * 2) * -1 ])
+            particles.push(p);
+        }
+    }
+
+    let wheel = ( n ) => {
+        return 'hsl('+ n * 5 % 360+', 100%, 70%)';
+    }
+
+    let average = (...arr) => {
+        let add = 0;
+        arr.forEach(a => add += a);
+
+        return add / arr.length;
+    }
+
+    let getAngle = (x, y, angle, h) => {
+        var radians = angle * (Math.PI / 180);
+        return { x: x + h * Math.cos(radians), y: y + h * Math.sin(radians) };
+    }
+</script></body>
